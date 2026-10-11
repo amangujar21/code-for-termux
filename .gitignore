@@ -1,0 +1,24 @@
+# Gradle / Android
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+.kotlin/
+captures/
+.cxx/
+
+# Signing
+*.jks
+*.keystore
+keystore.properties
+
+# Node
+node_modules/
+
+# Generated at build time from bridge/ and scripts/
+app/src/main/assets/bridge.tgz
+app/src/main/assets/setup-termux.sh
+
+.DS_Store
+Thumbs.db
