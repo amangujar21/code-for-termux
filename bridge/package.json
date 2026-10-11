@@ -1,6 +1,6 @@
 {
   "name": "claude-termux-bridge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Localhost WebSocket bridge between the Android app and Claude Code running in Termux",
   "type": "module",

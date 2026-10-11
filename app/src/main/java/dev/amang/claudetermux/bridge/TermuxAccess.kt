@@ -15,8 +15,12 @@ object TermuxAccess {
     private const val CONFIG_DIR = "${TermuxLauncher.HOME}/.termux"
     private const val PROPERTIES = "$CONFIG_DIR/termux.properties"
 
-    /** Where the folder picker should open. */
-    val homeUri: Uri get() = DocumentsContract.buildDocumentUri(AUTHORITY, TermuxLauncher.HOME)
+    /**
+     * Where the folder picker should open. This has to be Termux's root rather than the home
+     * document: Termux cannot tell the picker where a document sits, so the picker would fall back
+     * to the phone's own storage.
+     */
+    val homeUri: Uri get() = DocumentsContract.buildRootUri(AUTHORITY, TermuxLauncher.HOME)
 
     /** Returns null on success, otherwise what went wrong. [tree] is what the folder picker returned. */
     fun allowExternalApps(context: Context, tree: Uri): String? {

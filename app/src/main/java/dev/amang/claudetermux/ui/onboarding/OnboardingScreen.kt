@@ -6,6 +6,7 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -91,6 +92,8 @@ enum class SetupAction { GetTermux, GrantPermission, LinkTermux, RunSetup, Worki
 
 data class OnboardingUi(
     val termuxInstalled: Boolean = false,
+    /** False when the installed Termux is a build that cannot take commands from other apps. */
+    val termuxSupported: Boolean = true,
     val runCommandGranted: Boolean = false,
     val termuxLinked: Boolean = false,
     /** Null until settings have loaded. */
@@ -113,7 +116,7 @@ data class OnboardingUi(
             connected && status == null && statusError == null -> SetupAction.Working
             connected -> SetupAction.SignIn
             setup is SetupState.Running -> SetupAction.Working
-            !termuxInstalled -> SetupAction.GetTermux
+            !termuxInstalled || !termuxSupported -> SetupAction.GetTermux
             !runCommandGranted -> SetupAction.GrantPermission
             !termuxLinked -> SetupAction.LinkTermux
             else -> SetupAction.RunSetup
@@ -158,9 +161,14 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
 
     fun refreshDeviceState() {
         _ui.update {
+            val granted = TermuxLauncher.hasPermission(app)
+            val installed = TermuxLauncher.isInstalled(app)
             it.copy(
-                termuxInstalled = TermuxLauncher.isInstalled(app),
-                runCommandGranted = TermuxLauncher.hasPermission(app),
+                termuxInstalled = installed,
+                termuxSupported = !installed || TermuxLauncher.supportsRunCommand(app),
+                runCommandGranted = granted,
+                // Drop the "permission needed" hint once the user has granted it in system settings.
+                message = if (granted && !it.runCommandGranted) null else it.message,
             )
         }
         if (_ui.value.connected) checkAccount() else app.bridge.retryNow()
@@ -280,26 +288,52 @@ fun OnboardingScreen(viewModel: OnboardingViewModel, onDone: () -> Unit) {
 
     // After the first tap, each finished step leads straight into the next one.
     val next = remember { object { var run: () -> Unit = {} } }
+    // Android answers "no" by itself, without a prompt, once the user has refused twice or when
+    // Termux was installed after this app. Only the app's system settings page can grant it then.
+    var promptBlocked by rememberSaveable { mutableStateOf(false) }
+    var askedAt by remember { mutableStateOf(0L) }
     val askRunCommand = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         viewModel.refreshDeviceState()
-        if (granted) next.run() else viewModel.say("The app needs that permission to set up and start Claude Code in Termux.")
+        when {
+            granted -> next.run()
+            SystemClock.elapsedRealtime() - askedAt < 700 -> {
+                promptBlocked = true
+                viewModel.say(
+                    "Android did not show the permission prompt. Tap Open app settings, then Permissions > Additional permissions > " +
+                        "\"Run commands in Termux environment\" > Allow, and come back here. " +
+                        "If that entry is missing, uninstall this app and install it again; Termux has to be installed first.",
+                )
+            }
+            else -> viewModel.say("The app needs that permission to set up and start Claude Code in Termux.")
+        }
+    }
+    val requestRunCommand = {
+        if (promptBlocked) {
+            context.startActivity(
+                Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)),
+            )
+        } else {
+            askedAt = SystemClock.elapsedRealtime()
+            askRunCommand.launch(TermuxLauncher.PERMISSION)
+        }
     }
     val pickTermuxHome = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { tree ->
         if (tree != null) viewModel.linkTermux(tree) { next.run() }
+        else viewModel.say("No folder was chosen. Tap Set up again and tap \"Use this folder\" on the Termux folder.")
     }
     val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     next.run = {
         val now = viewModel.ui.value
         when (now.action) {
             SetupAction.GetTermux -> context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://f-droid.org/packages/com.termux/")))
-            SetupAction.GrantPermission -> askRunCommand.launch(TermuxLauncher.PERMISSION)
+            SetupAction.GrantPermission -> requestRunCommand()
             SetupAction.LinkTermux -> try {
                 pickTermuxHome.launch(TermuxAccess.homeUri)
             } catch (_: ActivityNotFoundException) {
                 viewModel.say("This phone has no folder picker. Use the manual command under Advanced.")
             }
             SetupAction.RunSetup -> viewModel.runSetup()
-            SetupAction.SignIn -> if (now.runCommandGranted) viewModel.signIn() else askRunCommand.launch(TermuxLauncher.PERMISSION)
+            SetupAction.SignIn -> if (now.runCommandGranted) viewModel.signIn() else requestRunCommand()
             SetupAction.Done -> viewModel.finish(onDone)
             SetupAction.Working -> Unit
         }
@@ -321,12 +355,14 @@ fun OnboardingScreen(viewModel: OnboardingViewModel, onDone: () -> Unit) {
             fontSize = 14.sp,
         )
 
-        val termuxReady = ui.connected || (ui.termuxInstalled && ui.runCommandGranted && ui.termuxLinked)
+        val termuxReady = ui.connected || (ui.termuxInstalled && ui.termuxSupported && ui.runCommandGranted && ui.termuxLinked)
         Step(1, "Connect to Termux", termuxReady) {
             Text(
                 when {
                     termuxReady -> "This app can run commands in Termux."
                     !ui.termuxInstalled -> "Install Termux from F-Droid or GitHub. The Play Store build can't be started by other apps."
+                    !ui.termuxSupported -> "The Termux on this phone is the Play Store build, which other apps can't run commands in. " +
+                        "Uninstall it (this deletes everything stored in Termux), install Termux from F-Droid or GitHub, open it once, then come back here."
                     else -> "Allow this app to run commands in Termux, then tap \"Use this folder\" and \"Allow\" on the Termux folder that opens. " +
                         "That lets the app turn on Termux's \"allow-external-apps\" setting. Any app you grant \"Run commands in Termux\" can then run commands there, so only grant it to apps you trust."
                 },
@@ -389,10 +425,13 @@ fun OnboardingScreen(viewModel: OnboardingViewModel, onDone: () -> Unit) {
             Text(
                 when (ui.action) {
                     SetupAction.GetTermux -> "Get Termux"
-                    SetupAction.GrantPermission, SetupAction.LinkTermux, SetupAction.RunSetup ->
-                        if (ui.setup is SetupState.Failed) "Try again" else "Set up"
+                    SetupAction.GrantPermission, SetupAction.LinkTermux, SetupAction.RunSetup -> when {
+                        ui.action == SetupAction.GrantPermission && promptBlocked -> "Open app settings"
+                        ui.setup is SetupState.Failed -> "Try again"
+                        else -> "Set up"
+                    }
                     SetupAction.Working -> if (ui.connected) "Checking…" else "Setting up…"
-                    SetupAction.SignIn -> "Sign in"
+                    SetupAction.SignIn -> if (!ui.runCommandGranted && promptBlocked) "Open app settings" else "Sign in"
                     SetupAction.Done -> "Continue"
                 },
             )

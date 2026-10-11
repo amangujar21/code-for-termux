@@ -1,5 +1,6 @@
 package dev.amang.claudetermux.bridge
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -17,6 +18,18 @@ object TermuxLauncher {
 
     fun isInstalled(context: Context): Boolean = try {
         context.packageManager.getPackageInfo(PACKAGE, 0)
+        true
+    } catch (_: PackageManager.NameNotFoundException) {
+        false
+    }
+
+    /**
+     * False for Termux builds that other apps cannot run commands in. The Play Store build is one:
+     * it ships without the RUN_COMMAND permission and service.
+     */
+    fun supportsRunCommand(context: Context): Boolean = try {
+        context.packageManager.getPermissionInfo(PERMISSION, 0)
+        context.packageManager.getServiceInfo(ComponentName(PACKAGE, SERVICE), 0)
         true
     } catch (_: PackageManager.NameNotFoundException) {
         false
