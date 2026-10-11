@@ -18,6 +18,7 @@ data class SettingsSnapshot(
     val host: String,
     val port: Int,
     val onboarded: Boolean,
+    val termuxLinked: Boolean,
     val model: String?,
     val effort: String?,
     val mode: String,
@@ -31,6 +32,7 @@ class Settings(private val context: Context) {
         val host = stringPreferencesKey("host")
         val port = intPreferencesKey("port")
         val onboarded = booleanPreferencesKey("onboarded")
+        val termuxLinked = booleanPreferencesKey("termux_linked")
         val model = stringPreferencesKey("model")
         val effort = stringPreferencesKey("effort")
         val mode = stringPreferencesKey("mode")
@@ -44,6 +46,7 @@ class Settings(private val context: Context) {
             host = p[Keys.host] ?: DEFAULT_HOST,
             port = p[Keys.port] ?: DEFAULT_PORT,
             onboarded = p[Keys.onboarded] ?: false,
+            termuxLinked = p[Keys.termuxLinked] ?: false,
             model = p[Keys.model],
             effort = p[Keys.effort],
             mode = p[Keys.mode] ?: "default",
@@ -71,6 +74,9 @@ class Settings(private val context: Context) {
     }
 
     suspend fun setOnboarded(value: Boolean) = context.dataStore.edit { it[Keys.onboarded] = value }
+
+    /** Set once the app has turned on Termux's allow-external-apps setting. */
+    suspend fun setTermuxLinked(value: Boolean) = context.dataStore.edit { it[Keys.termuxLinked] = value }
 
     suspend fun setModel(model: String?) = context.dataStore.edit {
         if (model == null) it.remove(Keys.model) else it[Keys.model] = model

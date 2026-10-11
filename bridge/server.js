@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { LiveSession } from './session.js';
 
-export const BRIDGE_VERSION = '0.1.0';
+export const BRIDGE_VERSION = '0.2.0';
 export const PROTOCOL_VERSION = 1;
 
 const IDLE_SESSION_TTL_MS = 30 * 60 * 1000;
@@ -81,8 +81,8 @@ export function createBridge(config) {
     },
 
     /** Account, models and commands without opening a conversation (used by onboarding). */
-    async 'bridge.status'() {
-      if (statusCache && Date.now() - statusCache.at < 60_000) return statusCache.value;
+    async 'bridge.status'({ fresh } = {}) {
+      if (!fresh && statusCache && Date.now() - statusCache.at < 60_000) return statusCache.value;
       const any = [...live.values()][0];
       let value;
       if (any) {

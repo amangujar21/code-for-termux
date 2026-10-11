@@ -18,13 +18,15 @@ class SetupServer(
     private val context: Context,
     private val token: String,
     private val bridgePort: Int,
+    private val onProgress: (step: String) -> Unit,
+    private val onFailed: (log: String) -> Unit,
     private val onDone: () -> Unit,
 ) {
     private val secret = ByteArray(12).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
     private val server = ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
     private val baseUrl = "http://127.0.0.1:${server.localPort}/$secret"
 
-    /** What the user pastes into Termux. */
+    /** What Termux runs to set itself up; also shown for pasting by hand. */
     val command: String = "curl -s $baseUrl/setup | bash"
 
     init {
@@ -46,7 +48,12 @@ class SetupServer(
         socket.soTimeout = 10_000
         val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
         val requestLine = reader.readLine() ?: return
-        while (!reader.readLine().isNullOrEmpty()) Unit // headers are irrelevant
+        var length = 0
+        while (true) {
+            val header = reader.readLine()
+            if (header.isNullOrEmpty()) break
+            if (header.startsWith("content-length:", ignoreCase = true)) length = header.substringAfter(':').trim().toIntOrNull() ?: 0
+        }
         val (method, path) = requestLine.split(' ').let { it.getOrElse(0) { "" } to it.getOrElse(1) { "" } }
         val out = socket.getOutputStream()
 
@@ -64,9 +71,26 @@ class SetupServer(
                     .replace("__BRIDGE_PORT__", bridgePort.toString())
                     .replace("__SETUP_URL__", baseUrl)
                 respond("200 OK", "text/x-shellscript", script.toByteArray())
+                onProgress("fetched")
             }
             method == "GET" && path == "/$secret/bridge.tgz" ->
                 respond("200 OK", "application/gzip", context.assets.open("bridge.tgz").use { it.readBytes() })
+            method == "POST" && path.startsWith("/$secret/progress/") -> {
+                respond("200 OK", "text/plain", "ok".toByteArray())
+                onProgress(path.substringAfterLast('/'))
+            }
+            method == "POST" && path == "/$secret/failed" -> {
+                // The script sends plain ASCII, so characters and bytes line up.
+                val body = CharArray(length.coerceIn(0, 16_384))
+                var read = 0
+                while (read < body.size) {
+                    val n = reader.read(body, read, body.size - read)
+                    if (n < 0) break
+                    read += n
+                }
+                respond("200 OK", "text/plain", "ok".toByteArray())
+                onFailed(String(body, 0, read).trim())
+            }
             method == "POST" && path == "/$secret/done" -> {
                 respond("200 OK", "text/plain", "ok".toByteArray())
                 onDone()

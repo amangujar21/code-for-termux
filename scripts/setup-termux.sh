@@ -1,7 +1,8 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # One-time setup for the Android app's Termux backend.
 #
-# Served by the app during onboarding (which fills in the __PLACEHOLDERS__):
+# Served by the app during onboarding (which fills in the __PLACEHOLDERS__) and
+# normally started by the app itself through Termux's RUN_COMMAND intent:
 #   curl -s http://127.0.0.1:<port>/setup | bash
 #
 # Installs Node, Claude Code (official linux-arm64 binary run through Termux's
@@ -15,31 +16,60 @@ CLAUDE_VERSION="${CLAUDE_VERSION:-latest}"
 
 BRIDGE_HOME="$HOME/.claude-bridge"
 CLAUDE_DIR="$BRIDGE_HOME/claude"
-GLIBC_LD="$PREFIX/glibc/lib/ld-linux-aarch64.so.1"
+GLIBC_LD="${PREFIX:-}/glibc/lib/ld-linux-aarch64.so.1"
+LOG="$BRIDGE_HOME/setup.log"
+LOCK="$BRIDGE_HOME/setup.pid"
 
 say() { printf '\n\033[1;33m==>\033[0m %s\n' "$*"; }
 die() { printf '\n\033[1;31mSetup failed:\033[0m %s\n' "$*" >&2; exit 1; }
+# Tells the app's setup screen which step is running.
+progress() { curl -fsS -m 5 -X POST "$SETUP_URL/progress/$1" >/dev/null 2>&1 || true; }
+
+mkdir -p "$BRIDGE_HOME"
+chmod 700 "$BRIDGE_HOME"
+if [ -f "$LOCK" ] && kill -0 "$(cat "$LOCK")" 2>/dev/null; then
+  echo "Setup is already running."
+  progress running
+  exit 0
+fi
+echo $$ > "$LOCK"
+exec > >(tee "$LOG") 2>&1
+
+WORK="$(mktemp -d)"
+finish() {
+  code=$?
+  rm -rf "$WORK"
+  rm -f "$LOCK"
+  if [ "$code" -ne 0 ]; then
+    sleep 1 # let tee catch up
+    tail -n 25 "$LOG" | sed 's/\x1b\[[0-9;]*m//g' | tr -cd '\11\12\40-\176' |
+      curl -fsS -m 5 -X POST --data-binary @- "$SETUP_URL/failed" >/dev/null 2>&1 || true
+  fi
+}
+trap finish EXIT
 
 [ -n "${PREFIX:-}" ] && [ -d "$PREFIX" ] || die "This script must run inside Termux."
 [ "$(uname -m)" = "aarch64" ] || die "Only 64-bit ARM phones are supported (found $(uname -m))."
 
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
-
 # Fetch the bridge first: Android may stop the app while the slow steps below run.
 say "Fetching the bridge from the app"
-curl -fsS "$SETUP_URL/bridge.tgz" -o "$WORK/bridge.tgz" || die "Could not reach the app. Reopen its setup screen, copy the command again and retry."
+curl -fsS "$SETUP_URL/bridge.tgz" -o "$WORK/bridge.tgz" || die "Could not reach the app. Reopen its setup screen and retry."
 
+# Keep Android from suspending Termux during the long steps.
+command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock || true
+
+progress packages
 say "Installing packages (this can take a few minutes)"
 export DEBIAN_FRONTEND=noninteractive
-pkg update -y -o Dpkg::Options::="--force-confold"
+# Upgrade first: Termux does not support installing new packages onto an outdated base.
+pkg upgrade -y -o Dpkg::Options::="--force-confold"
 pkg install -y -o Dpkg::Options::="--force-confold" nodejs-lts git ripgrep curl tar glibc-repo
 pkg install -y -o Dpkg::Options::="--force-confold" glibc-runner patchelf
 [ -x "$GLIBC_LD" ] || die "glibc loader not found at $GLIBC_LD after installing glibc-runner."
 
-mkdir -p "$BRIDGE_HOME" "$CLAUDE_DIR"
-chmod 700 "$BRIDGE_HOME"
+mkdir -p "$CLAUDE_DIR"
 
+progress claude
 say "Downloading Claude Code ($CLAUDE_VERSION)"
 (
   cd "$WORK"
@@ -69,6 +99,7 @@ if ! CLAUDE_REPORTED="$(claude --version 2>&1)"; then
 fi
 say "Claude Code works: $CLAUDE_REPORTED"
 
+progress bridge
 say "Installing the bridge"
 rm -rf "$BRIDGE_HOME/app.new"
 mkdir -p "$BRIDGE_HOME/app.new"
@@ -101,14 +132,16 @@ else
 fi
 termux-reload-settings 2>/dev/null || true
 
+progress starting
 say "Starting the bridge"
-"$BRIDGE_HOME/start-bridge.sh"
-sleep 2
+# Restart so a bridge left over from an earlier setup picks up the new token.
+"$BRIDGE_HOME/start-bridge.sh" --restart
+sleep 3
 if curl -fsS "http://127.0.0.1:$BRIDGE_PORT/health" >/dev/null; then
   curl -fsS -X POST "$SETUP_URL/done" >/dev/null 2>&1 || true
   printf '\n\033[1;32mAll set.\033[0m\n'
   if [ ! -f "$HOME/.claude/.credentials.json" ]; then
-    printf 'Last step: run \033[1mclaude\033[0m here once and sign in, then go back to the app.\n'
+    printf 'Last step: go back to the app and tap Sign in.\n'
   else
     printf 'Go back to the app.\n'
   fi

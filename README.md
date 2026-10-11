@@ -9,17 +9,23 @@ Android app (Compose)  <->  ws://127.0.0.1:8765 + token  <->  bridge (Node, in T
 
 - `app/` Kotlin + Jetpack Compose app.
 - `bridge/` Node server that wraps the Claude Agent SDK. See `bridge/protocol.md`.
-- `scripts/setup-termux.sh` one-time Termux setup, served to Termux by the app during onboarding.
+- `scripts/setup-termux.sh` one-time Termux setup, which the app has Termux run during onboarding.
 
 ## Install on a phone
 
-1. Install Termux from F-Droid or GitHub (not the Play Store build).
-2. Install the APK and open it. Copy the setup command it shows, paste it into Termux, and wait for "All set".
-3. Run `claude` once in Termux and sign in.
-4. Back in the app, grant "Run commands in Termux" and tap Continue.
+1. Install Termux from F-Droid or GitHub (not the Play Store build) and open it once so it finishes
+   its own first-time install.
+2. Install the APK, open it and tap **Set up**. Allow "Run commands in Termux", then tap
+   "Use this folder" and "Allow" on the Termux folder that opens. The app installs everything else
+   in Termux in the background and shows its progress.
+3. Tap **Sign in**. Termux opens Claude's sign-in, then sends you back to the app.
 
-The setup turns on Termux's `allow-external-apps`. Any app you grant the Termux run-command
-permission can then run commands in Termux, so grant it sparingly.
+The folder step lets the app turn on Termux's `allow-external-apps` setting, which Termux requires
+before it accepts commands from another app. Any app you grant the Termux run-command permission
+can then run commands in Termux, so grant it sparingly.
+
+If automatic setup does not work on your phone, Advanced on the setup screen has a command to paste
+into Termux instead.
 
 Claude Code has no Android build. Setup downloads the official linux-arm64 binary and patches it to
 load Termux's glibc. Scripts that rely on Termux's `LD_PRELOAD` shebang fix may not run from Claude's

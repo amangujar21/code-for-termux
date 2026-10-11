@@ -14,7 +14,7 @@ A wrong token gets `{ok:false,error:"unauthorized"}` and close code 4401.
 | Type | Params | Notes |
 | --- | --- | --- |
 | `hello` | `token` | Bridge version, home directory |
-| `bridge.status` | | Account, models, commands, Claude Code version |
+| `bridge.status` | `fresh?` | Account, models, commands, Claude Code version. Cached for a minute unless `fresh` |
 | `sessions.list` | `dir?`, `limit?`, `offset?` | Rows carry `state` when the session is live |
 | `session.open` | `sessionId?`, `cwd?`, `model?`, `mode?`, `effort?`, `afterSeq?` | Starts or resumes, subscribes, returns `history` (when `afterSeq` is 0 or events were lost) plus buffered `events` |
 | `session.leave` / `session.stop` | `sessionId` | Unsubscribe / end the process |
