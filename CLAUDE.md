@@ -42,10 +42,16 @@ The release APK is what gets installed on the phone. Updates must be signed with
 
 1. `TermuxLauncher` sends Termux `RUN_COMMAND` intents. That needs the `com.termux.permission.RUN_COMMAND` runtime permission and Termux's `allow-external-apps = true`.
 2. `TermuxAccess` turns that setting on by editing `~/.termux/termux.properties` through Termux's documents provider, after the user confirms the Termux folder in the system picker.
-3. `SetupServer` is a loopback HTTP server (random port, random secret path) that serves the setup script with `__TOKEN__`, `__BRIDGE_PORT__`, `__SETUP_URL__` filled in, serves `bridge.tgz`, and receives `progress/<step>`, `failed` (log tail) and `done` callbacks from the script. The app runs `curl -s <url>/setup | bash` in Termux in the background.
+3. `SetupServer` is a loopback HTTP server (random port, random secret path) that serves the setup script with `__TOKEN__`, `__BRIDGE_PORT__`, `__SETUP_URL__`, `__MODE__` filled in, serves `bridge.tgz`, and receives `progress/<step>[/<percent>]`, `log` (the latest output, every two seconds), `failed` (log tail) and `done` callbacks from the script. The app runs `curl -s <url>/setup | bash` in Termux in the background.
 4. The script installs Node, downloads the official linux-arm64 Claude Code binary, `patchelf`s it onto Termux's glibc, installs the bridge into `~/.claude-bridge`, writes `config.json` (token, port, `claudePath`) and starts the bridge.
 
-Adding a setup step means touching both ends: a `progress <name>` call in the script and its label in `OnboardingViewModel.onSetupProgress`.
+Adding a setup step means touching both ends: a `progress <name>` call in the script and its entry in `setupSteps` (`OnboardingScreen.kt`), which holds the label and the step's share of the progress bar.
+
+**App updates replace the bridge.** When the connected bridge's version differs from the app's `versionName` (`Hello.outdated`), the sessions screen and onboarding offer Update, which runs `<url>/update`: the same script with `MODE=bridge`, skipping the package and Claude Code installs. A bridge change therefore only reaches an existing install if the version strings are bumped.
+
+**Sign-in happens in Termux** (`TermuxLauncher.openSignIn` runs `claude auth login`), from onboarding, from `/login`, or from the card the chat shows when a turn fails with `authentication_failed`. Claude Code rereads its credentials every turn, so open sessions keep working afterwards.
+
+**Phone storage.** Sessions can only run in `/storage/emulated/0` after Termux has Android's storage permission. `fs.list` reports whether it does, and the folder picker has Termux ask for it (`TermuxLauncher.openStorageSetup` runs `termux-setup-storage`).
 
 **Runtime.** `App` owns the singletons: `Settings` (DataStore; holds the pairing token, endpoint, onboarding flags), `BridgeClient` and `TurnTracker`. `BridgeClient` keeps one auto-reconnecting WebSocket, correlates requests by `id`/`replyTo`, and exposes `state` plus a shared `events` flow. `Protocol.kt` holds the serializable message types and must match `bridge/protocol.md`.
 
@@ -55,6 +61,7 @@ Adding a setup step means touching both ends: a `progress <name>` call in the sc
 
 ## Things that are easy to get wrong
 
+- **A signed-out Claude Code still reports an account**: `{tokenSource: "none", apiProvider: "firstParty"}`. `AccountInfo.signedIn` has to treat `"none"` as absent, or onboarding skips the sign-in step.
 - **Play Store Termux does not work.** It cannot take commands from other apps. Only the F-Droid or GitHub build does; `TermuxLauncher.supportsRunCommand` detects this.
 - **Android stops showing the permission prompt** after two refusals; the request then fails instantly. Onboarding detects the instant failure and sends the user to the app's system settings page instead.
 - **The folder picker must be opened with Termux's root URI** (`DocumentsContract.buildRootUri`), not a document URI: Termux's provider cannot resolve a document's path, and the picker silently falls back to phone storage.

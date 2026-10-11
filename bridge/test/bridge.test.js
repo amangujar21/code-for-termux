@@ -10,10 +10,11 @@ const TOKEN = 'test-token-0123456789abcdef';
 
 /** Minimal stand-in for the Agent SDK: echoes each prompt, asking permission when it contains "write". */
 function fakeSdk() {
-  const calls = { setModel: [], setMode: [], effort: [], deleted: [] };
+  const calls = { setModel: [], setMode: [], effort: [], deleted: [], queries: 0 };
   const sdk = {
     calls,
     query({ prompt, options }) {
+      calls.queries++;
       let closed = false;
       let wake;
       const closedSignal = new Promise((resolve) => (wake = resolve));
@@ -113,12 +114,13 @@ function client(port, headers) {
 
 const isResult = (m) => m.event?.type === 'sdk' && m.event.message.type === 'result';
 
-let bridge, port, sdk, bridgeHome;
+let bridge, port, sdk, bridgeHome, phoneStorage;
 
 before(async () => {
   sdk = fakeSdk();
   bridgeHome = mkdtempSync(path.join(os.tmpdir(), 'bridge-test-'));
-  bridge = createBridge({ token: TOKEN, sdk, home: os.tmpdir(), bridgeHome });
+  phoneStorage = path.join(mkdtempSync(path.join(os.tmpdir(), 'bridge-phone-')), 'storage');
+  bridge = createBridge({ token: TOKEN, sdk, home: os.tmpdir(), bridgeHome, sharedStorage: phoneStorage });
   port = await bridge.listen(0);
 });
 
@@ -243,5 +245,27 @@ test('fs.list returns only folders and rejects relative mkdir', async () => {
   const listing = await c.request('fs.list', { path: bridgeHome });
   assert.deepEqual(listing.dirs, ['uploads']);
   await assert.rejects(c.request('fs.mkdir', { path: 'relative/dir' }));
+  c.ws.close();
+});
+
+test('fs.list says whether the phone storage can be used yet', async () => {
+  const c = client(port, { authorization: `Bearer ${TOKEN}` });
+  await c.opened;
+  assert.deepEqual((await c.request('fs.list', {})).storage, { path: phoneStorage, accessible: false });
+  await c.request('fs.mkdir', { path: phoneStorage });
+  assert.deepEqual((await c.request('fs.list', {})).storage, { path: phoneStorage, accessible: true });
+  c.ws.close();
+});
+
+test('a fresh bridge.status asks a new process instead of a running session', async () => {
+  const c = client(port, { authorization: `Bearer ${TOKEN}` });
+  await c.opened;
+  await c.request('session.open', {});
+  const before = sdk.calls.queries;
+  await c.request('bridge.status');
+  assert.equal(sdk.calls.queries, before);
+  const status = await c.request('bridge.status', { fresh: true });
+  assert.equal(sdk.calls.queries, before + 1);
+  assert.equal(status.account.email, 'me@example.com');
   c.ws.close();
 });

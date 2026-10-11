@@ -1,5 +1,6 @@
 package dev.amang.claudetermux.bridge
 
+import dev.amang.claudetermux.BuildConfig
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -22,7 +23,10 @@ data class Hello(
     val protocolVersion: Int = 0,
     val home: String = "",
     val platform: String = "",
-)
+) {
+    /** True after an app update, until the bridge in Termux has been replaced with the one this app ships. */
+    val outdated: Boolean get() = bridgeVersion.isNotEmpty() && bridgeVersion != BuildConfig.VERSION_NAME
+}
 
 @Serializable
 data class SlashCommand(
@@ -51,9 +55,12 @@ data class AccountInfo(
     val apiKeySource: String? = null,
     val apiProvider: String? = null,
 ) {
+    /** Claude Code reports the sources as "none", rather than leaving them out, when nobody is signed in. */
     val signedIn: Boolean
-        get() = email != null || tokenSource != null || apiKeySource != null ||
+        get() = email != null || tokenSource.isSource() || apiKeySource.isSource() ||
             (apiProvider != null && apiProvider != "firstParty")
+
+    private fun String?.isSource() = !isNullOrEmpty() && this != "none"
 }
 
 @Serializable
@@ -104,11 +111,16 @@ data class SessionOpened(
     val gap: Boolean = false,
 )
 
+/** The phone's own storage, which Termux can only open after the user grants it the storage permission. */
+@Serializable
+data class SharedStorage(val path: String, val accessible: Boolean = false)
+
 @Serializable
 data class FolderListing(
     val path: String,
     val parent: String? = null,
     val home: String = "",
+    val storage: SharedStorage? = null,
     val dirs: List<String> = emptyList(),
 )
 

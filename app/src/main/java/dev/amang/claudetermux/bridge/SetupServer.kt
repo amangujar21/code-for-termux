@@ -18,7 +18,8 @@ class SetupServer(
     private val context: Context,
     private val token: String,
     private val bridgePort: Int,
-    private val onProgress: (step: String) -> Unit,
+    private val onProgress: (step: String, percent: Int?) -> Unit,
+    private val onLog: (tail: String) -> Unit,
     private val onFailed: (log: String) -> Unit,
     private val onDone: () -> Unit,
 ) {
@@ -28,6 +29,9 @@ class SetupServer(
 
     /** What Termux runs to set itself up; also shown for pasting by hand. */
     val command: String = "curl -s $baseUrl/setup | bash"
+
+    /** Like [command], but only replaces the bridge when Claude Code is already installed. */
+    val updateCommand: String = "curl -s $baseUrl/update | bash"
 
     init {
         thread(name = "setup-server", isDaemon = true) {
@@ -63,33 +67,46 @@ class SetupServer(
             out.flush()
         }
 
+        // The script sends plain ASCII, so characters and bytes line up.
+        fun body(): String {
+            val chars = CharArray(length.coerceIn(0, 16_384))
+            var read = 0
+            while (read < chars.size) {
+                val n = reader.read(chars, read, chars.size - read)
+                if (n < 0) break
+                read += n
+            }
+            return String(chars, 0, read).trim()
+        }
+
         when {
-            method == "GET" && path == "/$secret/setup" -> {
+            method == "GET" && (path == "/$secret/setup" || path == "/$secret/update") -> {
                 val script = context.assets.open("setup-termux.sh").use { it.readBytes() }.decodeToString()
                     .replace("\r\n", "\n")
                     .replace("__TOKEN__", token)
                     .replace("__BRIDGE_PORT__", bridgePort.toString())
                     .replace("__SETUP_URL__", baseUrl)
+                    .replace("__MODE__", if (path.endsWith("/update")) "bridge" else "full")
                 respond("200 OK", "text/x-shellscript", script.toByteArray())
-                onProgress("fetched")
+                onProgress("fetched", null)
             }
             method == "GET" && path == "/$secret/bridge.tgz" ->
                 respond("200 OK", "application/gzip", context.assets.open("bridge.tgz").use { it.readBytes() })
             method == "POST" && path.startsWith("/$secret/progress/") -> {
                 respond("200 OK", "text/plain", "ok".toByteArray())
-                onProgress(path.substringAfterLast('/'))
+                // "<step>" or "<step>/<percent>"
+                val parts = path.removePrefix("/$secret/progress/").split('/')
+                onProgress(parts[0], parts.getOrNull(1)?.toIntOrNull()?.coerceIn(0, 100))
+            }
+            method == "POST" && path == "/$secret/log" -> {
+                val tail = body()
+                respond("200 OK", "text/plain", "ok".toByteArray())
+                onLog(tail)
             }
             method == "POST" && path == "/$secret/failed" -> {
-                // The script sends plain ASCII, so characters and bytes line up.
-                val body = CharArray(length.coerceIn(0, 16_384))
-                var read = 0
-                while (read < body.size) {
-                    val n = reader.read(body, read, body.size - read)
-                    if (n < 0) break
-                    read += n
-                }
+                val log = body()
                 respond("200 OK", "text/plain", "ok".toByteArray())
-                onFailed(String(body, 0, read).trim())
+                onFailed(log)
             }
             method == "POST" && path == "/$secret/done" -> {
                 respond("200 OK", "text/plain", "ok".toByteArray())

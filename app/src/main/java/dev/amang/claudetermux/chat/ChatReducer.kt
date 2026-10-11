@@ -38,6 +38,8 @@ sealed interface ChatItem {
         val outcome: String? = null,
     ) : ChatItem
     data class Notice(override val key: String, val text: String, val isError: Boolean = false) : ChatItem
+    /** Claude Code refused the turn because nobody is signed in; the app offers to sign in instead. */
+    data class SignIn(override val key: String) : ChatItem
 }
 
 enum class RunState { Idle, Running, WaitingPermission }
@@ -72,7 +74,7 @@ object ChatReducer {
             val message = entry.obj("message") ?: return@forEachIndexed
             state = when (entry.str("type")) {
                 "user" -> state.withUserMessage(key, message)
-                "assistant" -> state.withAssistantBlocks(key, message)
+                "assistant" -> state.withAssistantMessage(key, entry, message)
                 else -> state
             }
         }
@@ -137,7 +139,7 @@ object ChatReducer {
         return when (message.str("type")) {
             "stream_event" -> if (nested) this else withStreamEvent(key, message.obj("event") ?: return this)
             "assistant" -> if (nested) this else {
-                withAssistantBlocks(message.str("uuid") ?: key, message.obj("message") ?: return this)
+                withAssistantMessage(message.str("uuid") ?: key, message, message.obj("message") ?: return this)
                     .copy(streaming = emptyMap())
             }
             "user" -> if (nested) this else withToolResults(message.obj("message") ?: return this)
@@ -148,7 +150,8 @@ object ChatReducer {
                     turnsCompleted = turnsCompleted + 1,
                     items = items.map { if (it is ChatItem.Tool && !it.done) it.copy(done = true) else it },
                 )
-                if (!failed) finished
+                // The sign-in card already says why the turn ended.
+                if (!failed || finished.items.lastOrNull() is ChatItem.SignIn) finished
                 else finished.copy(
                     items = finished.items + ChatItem.Notice(
                         key,
@@ -221,6 +224,13 @@ object ChatReducer {
         if (hiddenUserPrefixes.any { text.startsWith(it) }) return this
         if (text.isEmpty() && attachments.isEmpty()) return this
         return copy(items = items + ChatItem.User(key, text, attachments))
+    }
+
+    /** [envelope] is the SDK message or transcript entry that carries [message]. */
+    private fun ChatState.withAssistantMessage(key: String, envelope: JsonObject, message: JsonObject): ChatState {
+        // Claude Code answers "Please run /login" here, which is a terminal command the app replaces.
+        if (envelope.str("error") != "authentication_failed") return withAssistantBlocks(key, message)
+        return if (items.any { it.key == key }) this else copy(items = items + ChatItem.SignIn(key))
     }
 
     private fun ChatState.withAssistantBlocks(key: String, message: JsonObject): ChatState {

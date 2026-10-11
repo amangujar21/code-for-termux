@@ -322,6 +322,29 @@ fun PermissionCard(item: ChatItem.Permission, onDecision: (String) -> Unit) {
 }
 
 @Composable
+fun SignInCard(onSignIn: () -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.6f), RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text("Sign in to Claude", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+        Text(
+            "Claude Code is not signed in, or its sign-in has expired. Termux opens Claude's sign-in page and brings you back here; then send your message again.",
+            color = extraColors.muted,
+            fontSize = 13.sp,
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            Button(onClick = onSignIn) { Text("Sign in") }
+        }
+    }
+}
+
+@Composable
 fun NoticeLine(item: ChatItem.Notice) {
     Text(
         item.text,

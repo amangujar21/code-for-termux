@@ -5,6 +5,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -123,6 +125,20 @@ fun SessionsScreen(
                 )
             }
 
+            if ((ui.connection as? ConnectionState.Connected)?.hello?.outdated == true) {
+                Text(
+                    "This app was updated. Tap here to update the part of it that runs in Termux too.",
+                    fontSize = 14.sp,
+                    modifier = Modifier
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                        .clickable(onClick = onSettings)
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                )
+            }
+
             val groups = remember(ui.sessions, query) { ui.grouped(query) }
             when {
                 ui.connection !is ConnectionState.Connected && ui.sessions.isEmpty() ->
@@ -205,6 +221,7 @@ fun SessionsScreen(
             recent = ui.recentFolders,
             list = viewModel::listFolder,
             create = viewModel::createFolder,
+            allowStorage = viewModel::allowStorage,
             onPick = {
                 picking = false
                 onNew(it)
@@ -265,6 +282,8 @@ fun FolderPicker(
     recent: List<String>,
     list: suspend (String?) -> Result<FolderListing>,
     create: suspend (String) -> Result<Unit>,
+    /** Has Termux ask for access to the phone's storage; returns what went wrong, if anything. */
+    allowStorage: (path: String) -> String?,
     onPick: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -273,13 +292,26 @@ fun FolderPicker(
     var error by remember { mutableStateOf<String?>(null) }
     var naming by remember { mutableStateOf(false) }
     var reload by remember { mutableStateOf(0) }
+    // Set while the user is away granting Termux the storage permission; the picker goes there once it works.
+    var awaitingStorage by remember { mutableStateOf(false) }
+    var askingStorage by remember { mutableStateOf(false) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val extra = extraColors
+
+    // The storage permission may have been granted while the user was away.
+    LifecycleResumeEffect(Unit) {
+        reload++
+        onPauseOrDispose { }
+    }
 
     LaunchedEffect(path, reload) {
         list(path).onSuccess {
             listing = it
             error = null
+            if (awaitingStorage && it.storage?.accessible == true) {
+                awaitingStorage = false
+                path = it.storage.path
+            }
         }.onFailure {
             error = it.message
             // A remembered folder may have been deleted; fall back to home.
@@ -295,6 +327,15 @@ fun FolderPicker(
         Column(Modifier.navigationBarsPadding()) {
             Text("Choose a project folder", fontSize = 18.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(horizontal = 20.dp))
             val current = listing
+            current?.storage?.let { storage ->
+                Row(Modifier.padding(horizontal = 20.dp).padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AssistChip(onClick = { path = current.home }, label = { Text("Termux home") })
+                    AssistChip(
+                        onClick = { if (storage.accessible) path = storage.path else askingStorage = true },
+                        label = { Text("Phone storage") },
+                    )
+                }
+            }
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(enabled = current?.parent != null, onClick = { path = current?.parent }) {
                     Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Parent folder")
@@ -332,6 +373,28 @@ fun FolderPicker(
                 reload++
             }
         }) { naming = false }
+    }
+    if (askingStorage) {
+        AlertDialog(
+            onDismissRequest = { askingStorage = false },
+            title = { Text("Let Termux use phone storage?") },
+            text = {
+                Text(
+                    "Claude Code runs inside Termux, which needs Android's storage permission before it can work in folders on this phone. " +
+                        "Termux opens and Android asks; choose Allow and you come back here. " +
+                        "Claude Code can then read and change files in the folder you start it in, as it can in Termux.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    askingStorage = false
+                    val storage = listing?.storage ?: return@TextButton
+                    error = allowStorage(storage.path)
+                    awaitingStorage = error == null
+                }) { Text("Continue") }
+            },
+            dismissButton = { TextButton(onClick = { askingStorage = false }) { Text("Cancel") } },
+        )
     }
 }
 

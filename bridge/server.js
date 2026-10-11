@@ -9,11 +9,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { LiveSession } from './session.js';
 
-export const BRIDGE_VERSION = '0.2.1';
+export const BRIDGE_VERSION = '0.3.0';
 export const PROTOCOL_VERSION = 1;
 
 const IDLE_SESSION_TTL_MS = 30 * 60 * 1000;
 const MAX_PAYLOAD_BYTES = 48 * 1024 * 1024;
+const ANDROID_SHARED_STORAGE = '/storage/emulated/0';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function tokensMatch(expected, given) {
@@ -23,7 +24,7 @@ function tokensMatch(expected, given) {
 }
 
 /**
- * @param {{ token: string, home?: string, bridgeHome?: string, claudePath?: string, sdk: object }} config
+ * @param {{ token: string, home?: string, bridgeHome?: string, claudePath?: string, sharedStorage?: string | null, sdk: object }} config
  *   `sdk` is the Agent SDK module (injected so tests can fake it).
  */
 export function createBridge(config) {
@@ -32,6 +33,10 @@ export function createBridge(config) {
   const home = config.home ?? os.homedir();
   const bridgeHome = config.bridgeHome ?? path.join(home, '.claude-bridge');
   const uploadsDir = path.join(bridgeHome, 'uploads');
+  // The phone's own storage. Termux can only read it once the user has granted it the storage permission.
+  const sharedStorage = config.sharedStorage !== undefined
+    ? config.sharedStorage
+    : process.platform === 'android' ? ANDROID_SHARED_STORAGE : null;
   const queryOptions = {
     ...(config.claudePath ? { pathToClaudeCodeExecutable: config.claudePath } : {}),
     stderr: (data) => process.stderr.write(`[claude] ${data}`),
@@ -83,7 +88,8 @@ export function createBridge(config) {
     /** Account, models and commands without opening a conversation (used by onboarding). */
     async 'bridge.status'({ fresh } = {}) {
       if (!fresh && statusCache && Date.now() - statusCache.at < 60_000) return statusCache.value;
-      const any = [...live.values()][0];
+      // A running session only knows the account it started with, so a fresh look needs a new process.
+      const any = fresh ? null : [...live.values()][0];
       let value;
       if (any) {
         value = await any.info();
@@ -226,7 +232,10 @@ export function createBridge(config) {
         .map((e) => e.name)
         .sort((a, b) => a.localeCompare(b));
       const parent = path.dirname(target);
-      return { path: target, parent: parent === target ? null : parent, home, dirs };
+      const storage = sharedStorage
+        ? { path: sharedStorage, accessible: await readdir(sharedStorage).then(() => true, () => false) }
+        : null;
+      return { path: target, parent: parent === target ? null : parent, home, storage, dirs };
     },
 
     async 'fs.mkdir'({ path: dir }) {

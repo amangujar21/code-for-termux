@@ -57,6 +57,20 @@ object TermuxLauncher {
         return null
     }
 
+    /**
+     * Has Termux ask for Android's storage permission, so sessions can run in folders of the phone's
+     * own storage. Termux shows the system prompt, then returns to [returnTo] once access works.
+     */
+    fun openStorageSetup(context: Context, storagePath: String, returnTo: String): String? {
+        val script = "printf '\\nAllow Termux to access files on this phone when Android asks.\\n'; termux-setup-storage; " +
+            "i=0; until ls '$storagePath' >/dev/null 2>&1; do i=\$((i+1)); if [ \$i -gt 120 ]; then exit 1; fi; sleep 1; done; " +
+            "printf '\\nAllowed. Returning to the app...\\n'; am start -n '$returnTo' >/dev/null 2>&1; sleep 1"
+        run(context, BASH, arrayOf("-c", script), background = false)?.let { return it }
+        // Termux may not be allowed to bring itself forward from the background, so do it for it.
+        open(context)
+        return null
+    }
+
     private fun run(context: Context, path: String, arguments: Array<String>, background: Boolean): String? {
         if (!isInstalled(context)) return "Termux is not installed"
         if (!hasPermission(context)) return "Permission to run commands in Termux has not been granted"

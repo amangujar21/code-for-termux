@@ -12,6 +12,8 @@ set -euo pipefail
 TOKEN="__TOKEN__"
 BRIDGE_PORT="__BRIDGE_PORT__"
 SETUP_URL="__SETUP_URL__"
+# "bridge" only replaces the bridge, which is all an app update needs. Anything else installs everything.
+MODE="__MODE__"
 CLAUDE_VERSION="${CLAUDE_VERSION:-latest}"
 
 BRIDGE_HOME="$HOME/.claude-bridge"
@@ -22,8 +24,8 @@ LOCK="$BRIDGE_HOME/setup.pid"
 
 say() { printf '\n\033[1;33m==>\033[0m %s\n' "$*"; }
 die() { printf '\n\033[1;31mSetup failed:\033[0m %s\n' "$*" >&2; exit 1; }
-# Tells the app's setup screen which step is running.
-progress() { curl -fsS -m 5 -X POST "$SETUP_URL/progress/$1" >/dev/null 2>&1 || true; }
+# Tells the app's setup screen which step is running, and optionally how many percent of it are done.
+progress() { curl -fsS -m 5 -X POST "$SETUP_URL/progress/$1${2:+/$2}" >/dev/null 2>&1 || true; }
 
 mkdir -p "$BRIDGE_HOME"
 chmod 700 "$BRIDGE_HOME"
@@ -35,9 +37,19 @@ fi
 echo $$ > "$LOCK"
 exec > >(tee "$LOG") 2>&1
 
+# Sends the app the latest output every couple of seconds, so its setup screen shows what is happening.
+(
+  while sleep 2 && kill -0 $$ 2>/dev/null; do
+    tail -c 2000 "$LOG" | tr '\r' '\n' | sed 's/\x1b\[[0-9;]*m//g' | tr -cd '\11\12\40-\176' | grep -v '^[[:space:]]*$' | tail -n 6 |
+      curl -fsS -m 5 -X POST --data-binary @- "$SETUP_URL/log" >/dev/null 2>&1 || true
+  done
+) &
+REPORTER=$!
+
 WORK="$(mktemp -d)"
 finish() {
   code=$?
+  kill "$REPORTER" 2>/dev/null || true
   rm -rf "$WORK"
   rm -f "$LOCK"
   if [ "$code" -ne 0 ]; then
@@ -58,46 +70,93 @@ curl -fsS "$SETUP_URL/bridge.tgz" -o "$WORK/bridge.tgz" || die "Could not reach 
 # Keep Android from suspending Termux during the long steps.
 command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock || true
 
-progress packages
-say "Installing packages (this can take a few minutes)"
-export DEBIAN_FRONTEND=noninteractive
-# Upgrade first: Termux does not support installing new packages onto an outdated base.
-pkg upgrade -y -o Dpkg::Options::="--force-confold"
-pkg install -y -o Dpkg::Options::="--force-confold" nodejs-lts git ripgrep curl tar glibc-repo
-pkg install -y -o Dpkg::Options::="--force-confold" glibc-runner patchelf
-[ -x "$GLIBC_LD" ] || die "glibc loader not found at $GLIBC_LD after installing glibc-runner."
+# Downloads $1 to $2, telling the app how far along it is.
+download() {
+  local total pid pct last=-1
+  # The registry leaves the size out of HEAD replies, so ask for one byte and read the total from its range.
+  total="$(curl -fsSL -m 20 -r 0-0 -o /dev/null -D - "$1" | tr -d '\r' | awk -F/ 'tolower($0) ~ /^content-range:/ { n = $2 } END { print n + 0 }')" || total=0
+  curl -fsSL --retry 3 "$1" -o "$2" &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 2
+    if [ "${total:-0}" -gt 0 ] && [ -f "$2" ]; then
+      pct=$(($(stat -c %s "$2") * 100 / total))
+      if [ "$pct" != "$last" ]; then
+        last=$pct
+        echo "Downloaded $pct%"
+        progress claude "$pct"
+      fi
+    fi
+  done
+  wait "$pid"
+}
 
-mkdir -p "$CLAUDE_DIR"
+install_packages() {
+  export DEBIAN_FRONTEND=noninteractive
+  progress upgrade
+  say "Updating Termux packages (this can take a few minutes)"
+  # Upgrade first: Termux does not support installing new packages onto an outdated base.
+  pkg upgrade -y -o Dpkg::Options::="--force-confold"
+  progress packages
+  say "Installing Node.js and tools"
+  pkg install -y -o Dpkg::Options::="--force-confold" nodejs-lts git ripgrep curl tar glibc-repo
+  progress glibc
+  say "Installing glibc"
+  pkg install -y -o Dpkg::Options::="--force-confold" glibc-runner patchelf
+  [ -x "$GLIBC_LD" ] || die "glibc loader not found at $GLIBC_LD after installing glibc-runner."
+}
 
-progress claude
-say "Downloading Claude Code ($CLAUDE_VERSION)"
-(
-  cd "$WORK"
+install_claude() {
+  local pkg="@anthropic-ai/claude-code-linux-arm64@$CLAUDE_VERSION" url
+  mkdir -p "$CLAUDE_DIR"
+
+  progress claude 0
+  say "Downloading Claude Code ($CLAUDE_VERSION)"
   # The published package is tagged linux/arm64, so fetch the tarball directly
   # instead of letting npm reject it on Android.
-  npm pack --silent "@anthropic-ai/claude-code-linux-arm64@$CLAUDE_VERSION" >/dev/null
-  tar -xzf anthropic-ai-claude-code-linux-arm64-*.tgz
-)
-BIN_SRC="$(find "$WORK/package" -type f -size +20M | head -n 1)"
-[ -n "$BIN_SRC" ] || die "Could not find the Claude Code binary inside the npm package."
-install -m 755 "$BIN_SRC" "$CLAUDE_DIR/claude.bin"
+  url="$(npm view "$pkg" dist.tarball 2>/dev/null | tail -n 1)" || url=""
+  (
+    cd "$WORK"
+    # curl can report how far the download is; npm pack is the fallback.
+    case "$url" in
+      https://*) download "$url" claude.tgz || rm -f claude.tgz ;;
+    esac
+    if [ ! -f claude.tgz ]; then
+      npm pack --silent "$pkg" >/dev/null
+      mv anthropic-ai-claude-code-linux-arm64-*.tgz claude.tgz
+    fi
+    progress unpack
+    say "Unpacking Claude Code"
+    tar -xzf claude.tgz
+  )
+  BIN_SRC="$(find "$WORK/package" -type f -size +20M | head -n 1)"
+  [ -n "$BIN_SRC" ] || die "Could not find the Claude Code binary inside the npm package."
+  install -m 755 "$BIN_SRC" "$CLAUDE_DIR/claude.bin"
 
-say "Patching the binary to use Termux's glibc"
-patchelf --set-interpreter "$GLIBC_LD" "$CLAUDE_DIR/claude.bin"
+  say "Patching the binary to use Termux's glibc"
+  patchelf --set-interpreter "$GLIBC_LD" "$CLAUDE_DIR/claude.bin"
 
-# termux-exec's LD_PRELOAD is a bionic library and crashes glibc programs.
-cat > "$PREFIX/bin/claude" <<EOF
+  # termux-exec's LD_PRELOAD is a bionic library and crashes glibc programs.
+  cat > "$PREFIX/bin/claude" <<EOF
 #!$PREFIX/bin/sh
 unset LD_PRELOAD
 export DISABLE_AUTOUPDATER=1
 exec "$CLAUDE_DIR/claude.bin" "\$@"
 EOF
-chmod 755 "$PREFIX/bin/claude"
+  chmod 755 "$PREFIX/bin/claude"
 
-if ! CLAUDE_REPORTED="$(claude --version 2>&1)"; then
-  die "Claude Code does not start on this device: $CLAUDE_REPORTED"
+  if ! CLAUDE_REPORTED="$(claude --version 2>&1)"; then
+    die "Claude Code does not start on this device: $CLAUDE_REPORTED"
+  fi
+  say "Claude Code works: $CLAUDE_REPORTED"
+}
+
+if [ "$MODE" = bridge ] && [ -x "$CLAUDE_DIR/claude.bin" ] && command -v node >/dev/null 2>&1; then
+  say "Updating the bridge"
+else
+  install_packages
+  install_claude
 fi
-say "Claude Code works: $CLAUDE_REPORTED"
 
 progress bridge
 say "Installing the bridge"

@@ -4,10 +4,12 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.amang.claudetermux.App
+import dev.amang.claudetermux.MainActivity
 import dev.amang.claudetermux.bridge.ConnectionState
 import dev.amang.claudetermux.bridge.FolderListing
 import dev.amang.claudetermux.bridge.SessionList
 import dev.amang.claudetermux.bridge.SessionRow
+import dev.amang.claudetermux.bridge.TermuxLauncher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -91,6 +93,10 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
     suspend fun createFolder(path: String): Result<Unit> = runCatching {
         bridge.send("fs.mkdir") { put("path", path) }
     }
+
+    /** Has Termux ask for Android's storage permission; returns what went wrong, if anything. */
+    fun allowStorage(path: String): String? =
+        TermuxLauncher.openStorageSetup(app, path, "${app.packageName}/${MainActivity::class.java.name}")
 
     fun retryConnection() = bridge.retryNow()
 }

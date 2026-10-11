@@ -14,7 +14,7 @@ A wrong token gets `{ok:false,error:"unauthorized"}` and close code 4401.
 | Type | Params | Notes |
 | --- | --- | --- |
 | `hello` | `token` | Bridge version, home directory |
-| `bridge.status` | `fresh?` | Account, models, commands, Claude Code version. Cached for a minute unless `fresh` |
+| `bridge.status` | `fresh?` | Account, models, commands, Claude Code version. Cached for a minute unless `fresh`, which asks a new Claude Code process. A signed-out account has `tokenSource: "none"` |
 | `sessions.list` | `dir?`, `limit?`, `offset?` | Rows carry `state` when the session is live |
 | `session.open` | `sessionId?`, `cwd?`, `model?`, `mode?`, `effort?`, `afterSeq?` | Starts or resumes, subscribes, returns `history` (when `afterSeq` is 0 or events were lost) plus buffered `events` |
 | `session.leave` / `session.stop` | `sessionId` | Unsubscribe / end the process |
@@ -24,7 +24,7 @@ A wrong token gets `{ok:false,error:"unauthorized"}` and close code 4401.
 | `set.model` / `set.mode` / `set.effort` | `sessionId`, value | Modes: `default`, `acceptEdits`, `plan`, `bypassPermissions` |
 | `context.usage` / `mcp.status` / `commands.list` | `sessionId` | |
 | `session.rename` / `session.delete` | `sessionId`, `title?` | |
-| `fs.list` / `fs.mkdir` | `path` | Folders only |
+| `fs.list` / `fs.mkdir` | `path` | Folders only. `fs.list` also returns `storage: {path, accessible}` for the phone's own storage (null off Android); it is not accessible until Termux has the storage permission |
 
 ## Events
 

@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.SystemClock
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -33,8 +34,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -56,6 +57,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.AndroidViewModel
@@ -83,12 +85,27 @@ import kotlinx.serialization.json.put
 
 sealed interface SetupState {
     data object Idle : SetupState
-    data class Running(val step: String) : SetupState
+    /** [progress] is the share of the whole setup that is done, or null when that is not known. [log] is Termux's latest output. */
+    data class Running(val step: String, val progress: Float? = null, val log: String = "") : SetupState
     data class Failed(val detail: String) : SetupState
 }
 
 /** The one thing the setup screen is waiting on. */
-enum class SetupAction { GetTermux, GrantPermission, LinkTermux, RunSetup, Working, SignIn, Done }
+enum class SetupAction { GetTermux, GrantPermission, LinkTermux, RunSetup, Working, UpdateBridge, SignIn, Done }
+
+/** A step the setup script reports, with the share of the whole setup done when it starts and when it ends. */
+private class SetupStep(val label: String, val from: Float, val to: Float)
+
+private val setupSteps = mapOf(
+    "fetched" to SetupStep("Termux is getting ready…", 0.02f, 0.04f),
+    "upgrade" to SetupStep("Updating Termux packages. This can take several minutes…", 0.04f, 0.16f),
+    "packages" to SetupStep("Installing Node.js and tools…", 0.16f, 0.32f),
+    "glibc" to SetupStep("Installing glibc…", 0.32f, 0.42f),
+    "claude" to SetupStep("Downloading Claude Code", 0.42f, 0.82f),
+    "unpack" to SetupStep("Unpacking Claude Code…", 0.82f, 0.86f),
+    "bridge" to SetupStep("Installing the bridge…", 0.86f, 0.96f),
+    "starting" to SetupStep("Starting the bridge…", 0.96f, 1f),
+)
 
 data class OnboardingUi(
     val termuxInstalled: Boolean = false,
@@ -110,8 +127,15 @@ data class OnboardingUi(
     val connected: Boolean get() = connection is ConnectionState.Connected
     val signedIn: Boolean get() = status?.account?.signedIn == true
 
+    val bridgeOutdated: Boolean get() = (connection as? ConnectionState.Connected)?.hello?.outdated == true
+
+    /** Whether Termux still has installing to do, which is when the setup's progress and errors matter. */
+    val installing: Boolean get() = !connected || bridgeOutdated
+
     val action: SetupAction
         get() = when {
+            setup is SetupState.Running && bridgeOutdated -> SetupAction.Working
+            bridgeOutdated -> SetupAction.UpdateBridge
             connected && signedIn -> SetupAction.Done
             connected && status == null && statusError == null -> SetupAction.Working
             connected -> SetupAction.SignIn
@@ -127,6 +151,7 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
     private val app = application as App
     private var server: SetupServer? = null
     private var watchdog: Job? = null
+    private var updating = false
 
     private val _ui = MutableStateFlow(OnboardingUi())
     val ui: StateFlow<OnboardingUi> = _ui
@@ -135,7 +160,7 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             val token = app.settings.ensureToken()
             val settings = app.settings.current()
-            server = SetupServer(app, token, settings.port, ::onSetupProgress, ::onSetupFailed) {
+            server = SetupServer(app, token, settings.port, ::onSetupProgress, ::onSetupLog, ::onSetupFailed) {
                 watchdog?.cancel()
                 _ui.update { it.copy(setup = SetupState.Idle) }
                 app.bridge.retryNow()
@@ -198,20 +223,24 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    /** Has Termux install everything in the background; the script reports back through [SetupServer]. */
-    fun runSetup() {
-        val command = server?.command ?: return
+    /**
+     * Has Termux install everything in the background; the script reports back through [SetupServer].
+     * With [update] it only replaces the bridge, which is all a new version of this app needs.
+     */
+    fun runSetup(update: Boolean = false) {
+        val command = server?.let { if (update) it.updateCommand else it.command } ?: return
         val problem = TermuxLauncher.runSetup(app, command)
         if (problem != null) {
             _ui.update { it.copy(setup = SetupState.Failed(problem)) }
             return
         }
+        updating = update
         _ui.update { it.copy(setup = SetupState.Running("Starting Termux…"), message = null) }
         watchdog?.cancel()
         watchdog = viewModelScope.launch {
             delay(25_000)
             _ui.update {
-                if (it.connected) it
+                if (!it.installing) it
                 else it.copy(
                     setup = SetupState.Failed(
                         "Termux did not respond. Open Termux once so it finishes its own first-time install, then come back and try again.",
@@ -221,18 +250,24 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    private fun onSetupProgress(step: String) {
+    private fun onSetupProgress(step: String, percent: Int?) {
         watchdog?.cancel()
-        val text = when (step) {
-            "fetched" -> "Termux is getting ready…"
-            "running" -> "Setup is already running in Termux…"
-            "packages" -> "Installing packages. This can take several minutes…"
-            "claude" -> "Downloading Claude Code…"
-            "bridge" -> "Installing the bridge…"
-            "starting" -> "Starting the bridge…"
-            else -> return
+        val known = setupSteps[step]
+        val text = when {
+            step == "running" -> "Setup is already running in Termux…"
+            known == null -> return
+            percent != null -> "${known.label} ($percent%)…"
+            step == "claude" -> "${known.label}…"
+            else -> known.label
         }
-        _ui.update { it.copy(setup = SetupState.Running(text)) }
+        // An update skips most steps, so its position among all of them says nothing.
+        val progress = known?.takeIf { !updating }?.let { it.from + (it.to - it.from) * (percent ?: 0) / 100f }
+        _ui.update { it.copy(setup = SetupState.Running(text, progress, (it.setup as? SetupState.Running)?.log.orEmpty())) }
+    }
+
+    private fun onSetupLog(tail: String) {
+        watchdog?.cancel()
+        _ui.update { ui -> (ui.setup as? SetupState.Running)?.let { ui.copy(setup = it.copy(log = tail)) } ?: ui }
     }
 
     private fun onSetupFailed(log: String) {
@@ -333,6 +368,7 @@ fun OnboardingScreen(viewModel: OnboardingViewModel, onDone: () -> Unit) {
                 viewModel.say("This phone has no folder picker. Use the manual command under Advanced.")
             }
             SetupAction.RunSetup -> viewModel.runSetup()
+            SetupAction.UpdateBridge -> if (now.runCommandGranted) viewModel.runSetup(update = true) else requestRunCommand()
             SetupAction.SignIn -> if (now.runCommandGranted) viewModel.signIn() else requestRunCommand()
             SetupAction.Done -> viewModel.finish(onDone)
             SetupAction.Working -> Unit
@@ -371,14 +407,10 @@ fun OnboardingScreen(viewModel: OnboardingViewModel, onDone: () -> Unit) {
             )
         }
 
-        Step(2, "Install Claude Code", ui.connected) {
+        Step(2, "Install Claude Code", !ui.installing) {
             when (val setup = ui.setup) {
-                is SetupState.Running -> if (!ui.connected) Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(10.dp))
-                    Text(setup.step, fontSize = 14.sp)
-                }
-                is SetupState.Failed -> if (!ui.connected) {
+                is SetupState.Running -> if (ui.installing) SetupProgress(setup)
+                is SetupState.Failed -> if (ui.installing) {
                     Text("Setup did not finish:", color = MaterialTheme.colorScheme.error, fontSize = 14.sp)
                     Text(
                         setup.detail,
@@ -395,8 +427,11 @@ fun OnboardingScreen(viewModel: OnboardingViewModel, onDone: () -> Unit) {
                 SetupState.Idle -> Unit
             }
             Text(
-                if (ui.connected) listOfNotNull("Installed", ui.status?.claudeCodeVersion?.let { "Claude Code $it" }).joinToString(" · ")
-                else "The app has Termux install Node.js, Claude Code and a small bridge. It needs an internet connection and a few minutes; keep this screen open.",
+                when {
+                    ui.bridgeOutdated -> "This app was updated. Tap Update so the part of it that runs in Termux matches; that takes about a minute and ends any running sessions."
+                    ui.connected -> listOfNotNull("Installed", ui.status?.claudeCodeVersion?.let { "Claude Code $it" }).joinToString(" · ")
+                    else -> "The app has Termux install Node.js, Claude Code and a small bridge. It needs an internet connection and a few minutes; keep this screen open."
+                },
                 color = extra.muted,
                 fontSize = 14.sp,
             )
@@ -408,6 +443,7 @@ fun OnboardingScreen(viewModel: OnboardingViewModel, onDone: () -> Unit) {
                 when {
                     ui.signedIn -> listOfNotNull(account?.email, account?.subscriptionType).joinToString(" · ").ifEmpty { "Signed in" }
                     !ui.connected -> "Available once Claude Code is installed."
+                    ui.bridgeOutdated -> "Available once the update is done."
                     ui.statusError != null -> "Could not check: ${ui.statusError}"
                     ui.status == null -> "Checking…"
                     else -> "Tap Sign in. Termux opens Claude's sign-in page; when you are done it brings you back here."
@@ -430,7 +466,16 @@ fun OnboardingScreen(viewModel: OnboardingViewModel, onDone: () -> Unit) {
                         ui.setup is SetupState.Failed -> "Try again"
                         else -> "Set up"
                     }
-                    SetupAction.Working -> if (ui.connected) "Checking…" else "Setting up…"
+                    SetupAction.UpdateBridge -> when {
+                        !ui.runCommandGranted && promptBlocked -> "Open app settings"
+                        ui.setup is SetupState.Failed -> "Try again"
+                        else -> "Update"
+                    }
+                    SetupAction.Working -> when {
+                        ui.bridgeOutdated -> "Updating…"
+                        ui.connected -> "Checking…"
+                        else -> "Setting up…"
+                    }
                     SetupAction.SignIn -> if (!ui.runCommandGranted && promptBlocked) "Open app settings" else "Sign in"
                     SetupAction.Done -> "Continue"
                 },
@@ -446,6 +491,37 @@ fun OnboardingScreen(viewModel: OnboardingViewModel, onDone: () -> Unit) {
         TextButton(onClick = { advanced = !advanced }) { Text(if (advanced) "Hide advanced" else "Advanced") }
         if (advanced) Advanced(ui, viewModel)
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun SetupProgress(setup: SetupState.Running) {
+    val extra = extraColors
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(setup.step, fontSize = 14.sp)
+        if (setup.progress == null) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+        } else {
+            val shown by animateFloatAsState(setup.progress, label = "setup progress")
+            LinearProgressIndicator(progress = { shown }, modifier = Modifier.fillMaxWidth())
+        }
+        // What Termux printed last, so a slow step can be told apart from a stuck one.
+        if (setup.log.isNotEmpty()) {
+            Text(
+                setup.log,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp,
+                lineHeight = 15.sp,
+                color = extra.muted,
+                maxLines = 6,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(extra.codeBackground)
+                    .padding(10.dp),
+            )
+        }
     }
 }
 

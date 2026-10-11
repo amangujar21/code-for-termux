@@ -135,7 +135,7 @@ fun ChatScreen(
                 ui.opening -> CircularProgressIndicator(Modifier.align(Alignment.Center).size(28.dp), strokeWidth = 2.dp)
                 ui.error != null && ui.chat.items.isEmpty() -> ErrorState(ui.error!!, viewModel::retry, Modifier.align(Alignment.Center))
                 ui.chat.items.isEmpty() && ui.chat.streaming.isEmpty() -> EmptyState(ui, Modifier.align(Alignment.Center))
-                else -> MessageList(ui, speaker, viewModel::answerPermission)
+                else -> MessageList(ui, speaker, viewModel::answerPermission, viewModel::signIn)
             }
         }
 
@@ -256,7 +256,7 @@ private fun TopBar(ui: ChatUi, onBack: () -> Unit, onMenu: (Sheet) -> Unit, onSt
 }
 
 @Composable
-private fun MessageList(ui: ChatUi, speaker: Speaker, onPermission: (String, String) -> Unit) {
+private fun MessageList(ui: ChatUi, speaker: Speaker, onPermission: (String, String) -> Unit, onSignIn: () -> Unit) {
     val items = ui.chat.visibleItems
     val listState = rememberLazyListState()
     var followTail by remember { mutableStateOf(true) }
@@ -295,6 +295,7 @@ private fun MessageList(ui: ChatUi, speaker: Speaker, onPermission: (String, Str
                 is ChatItem.Tool -> ToolCard(item)
                 is ChatItem.Permission -> PermissionCard(item) { decision -> onPermission(item.requestId, decision) }
                 is ChatItem.Notice -> NoticeLine(item)
+                is ChatItem.SignIn -> SignInCard(onSignIn)
             }
         }
         item(key = "tail") { Spacer(Modifier.height(1.dp)) }

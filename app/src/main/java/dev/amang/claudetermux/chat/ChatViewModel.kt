@@ -10,6 +10,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import dev.amang.claudetermux.App
+import dev.amang.claudetermux.MainActivity
 import dev.amang.claudetermux.bridge.AccountInfo
 import dev.amang.claudetermux.bridge.BridgeJson
 import dev.amang.claudetermux.bridge.ConnectionState
@@ -21,6 +22,7 @@ import dev.amang.claudetermux.bridge.SessionEvent
 import dev.amang.claudetermux.bridge.SessionList
 import dev.amang.claudetermux.bridge.SessionOpened
 import dev.amang.claudetermux.bridge.SlashCommand
+import dev.amang.claudetermux.bridge.TermuxLauncher
 import dev.amang.claudetermux.bridge.arr
 import dev.amang.claudetermux.bridge.asTextOrNull
 import dev.amang.claudetermux.bridge.obj
@@ -239,6 +241,10 @@ class ChatViewModel(application: Application, saved: SavedStateHandle) : Android
                 setMode("plan")
                 return true
             }
+            "login" -> {
+                signIn()
+                return true
+            }
             else -> return false
         }
         _effects.trySend(effect)
@@ -292,6 +298,15 @@ class ChatViewModel(application: Application, saved: SavedStateHandle) : Android
                 _effects.send(ChatEffect.Toast(e.message ?: onError))
             }
         }
+    }
+
+    /**
+     * Opens Termux on Claude's sign-in prompt, which brings the user back here afterwards. Claude Code
+     * rereads its credentials for every turn, so the open session works again without a restart.
+     */
+    fun signIn() {
+        val problem = TermuxLauncher.openSignIn(app, "${app.packageName}/${MainActivity::class.java.name}")
+        if (problem != null) _effects.trySend(ChatEffect.Toast("$problem. You can also open Termux and run: claude auth login"))
     }
 
     fun stop() = sessionCall("interrupt", "Could not stop")
@@ -351,6 +366,7 @@ object NativeCommands {
         SlashCommand("context", "Show context window usage", builtin = true),
         SlashCommand("mcp", "Show MCP server status", builtin = true),
         SlashCommand("rename", "Rename this session", "[title]", builtin = true),
+        SlashCommand("login", "Sign in to Claude", builtin = true),
     )
-    val names = setOf("model", "effort", "clear", "new", "resume", "permissions", "context", "mcp", "rename", "exit", "quit")
+    val names = setOf("model", "effort", "clear", "new", "resume", "permissions", "context", "mcp", "rename", "login", "exit", "quit")
 }

@@ -1,5 +1,7 @@
 package dev.amang.claudetermux
 
+import dev.amang.claudetermux.bridge.AccountInfo
+import dev.amang.claudetermux.bridge.BridgeJson
 import dev.amang.claudetermux.chat.ChatItem
 import dev.amang.claudetermux.chat.ChatReducer
 import dev.amang.claudetermux.chat.ChatState
@@ -88,6 +90,30 @@ class ChatReducerTest {
         assertEquals(listOf("User", "Thinking", "Tool", "Notice"), items.map { it::class.simpleName })
         assertEquals(listOf("image"), (items[0] as ChatItem.User).attachments)
         assertTrue((items[2] as ChatItem.Tool).done)
+    }
+
+    @Test
+    fun `being signed out offers sign-in instead of the terminal's login hint`() {
+        val state = ChatState().feed(
+            json("""{"type":"user.echo","text":"hi","attachments":[]}"""),
+            sdk("""{"type":"assistant","uuid":"a1","parent_tool_use_id":null,"error":"authentication_failed","message":{"content":[{"type":"text","text":"Not logged in · Please run /login"}]}}"""),
+            sdk("""{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login"}"""),
+        )
+        assertEquals(listOf("User", "SignIn"), state.items.map { it::class.simpleName })
+        assertEquals(1, state.turnsCompleted)
+
+        val history = listOf(json("""{"type":"assistant","uuid":"a1","error":"authentication_failed","message":{"content":[{"type":"text","text":"Not logged in · Please run /login"}]}}"""))
+        assertTrue(ChatReducer.fromHistory(history).items.single() is ChatItem.SignIn)
+    }
+
+    @Test
+    fun `an account without a token source is not signed in`() {
+        fun account(text: String) = BridgeJson.decodeFromString(AccountInfo.serializer(), text)
+        assertFalse(account("""{"tokenSource":"none","apiProvider":"firstParty"}""").signedIn)
+        assertFalse(account("""{"apiKeySource":"none"}""").signedIn)
+        assertTrue(account("""{"email":"me@example.com","tokenSource":"claude.ai","apiProvider":"firstParty"}""").signedIn)
+        assertTrue(account("""{"apiKeySource":"ANTHROPIC_API_KEY"}""").signedIn)
+        assertTrue(account("""{"apiProvider":"bedrock"}""").signedIn)
     }
 
     @Test
