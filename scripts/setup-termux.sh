@@ -171,6 +171,12 @@ mv "$BRIDGE_HOME/app.new" "$BRIDGE_HOME/app"
 rm -rf "$BRIDGE_HOME/app.old"
 install -m 755 "$BRIDGE_HOME/app/start-bridge.sh" "$BRIDGE_HOME/start-bridge.sh"
 
+# Bundled skills and agents. Same-named files are replaced, so updates reach the phone; others are left alone.
+say "Installing the bundled skills"
+mkdir -p "$HOME/.claude/skills" "$HOME/.claude/agents"
+cp -R "$BRIDGE_HOME/app/claude/skills/." "$HOME/.claude/skills/"
+cp -R "$BRIDGE_HOME/app/claude/agents/." "$HOME/.claude/agents/"
+
 umask 077
 cat > "$BRIDGE_HOME/config.json" <<EOF
 {

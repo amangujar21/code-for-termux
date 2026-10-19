@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { LiveSession } from './session.js';
 
-export const BRIDGE_VERSION = '0.3.0';
+export const BRIDGE_VERSION = '0.4.0';
 export const PROTOCOL_VERSION = 1;
 
 const IDLE_SESSION_TTL_MS = 30 * 60 * 1000;

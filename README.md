@@ -31,6 +31,20 @@ Claude Code has no Android build. Setup downloads the official linux-arm64 binar
 load Termux's glibc. Scripts that rely on Termux's `LD_PRELOAD` shebang fix may not run from Claude's
 Bash tool.
 
+## Bundled novel-writing skills
+
+Setup also installs a few skills and agents into Termux's `~/.claude` (sources in `bridge/claude/`):
+
+- `/new-novel` interviews you about the premise, characters, style and structure, then creates the
+  project folder with its story bible and outline. Put it in phone storage so Obsidian can open it.
+- `/write-chapter [N] [premise]` writes the next chapter (or chapter N) in a fresh subagent, so the
+  chat's context stays small. Each chapter is its own Markdown file, with a summary and fact-sheet
+  update that the next chapter reads.
+- `/revise-chapter N <notes>` and `/summarize-chapters` revise a chapter and backfill summaries.
+
+Setup and app updates replace these files, so make lasting changes in `bridge/claude/`, not on the
+phone. Copy the same folders into `~/.claude` to use them on a PC.
+
 ## What the app does
 
 Session list by project, new session in any Termux folder, streaming chat with markdown, tool cards,

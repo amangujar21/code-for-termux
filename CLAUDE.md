@@ -36,7 +36,7 @@ The release APK is what gets installed on the phone. Updates must be signed with
 
 ## How the pieces fit
 
-**The bridge is packaged inside the APK.** `app/build.gradle.kts` tars `bridge/{server.js,session.js,package.json,package-lock.json,start-bridge.sh}` into `bridge.tgz` and copies `scripts/setup-termux.sh` beside it as generated assets on every build. Editing those files changes the APK; a new bridge file must be added to the `packBridge` include list or it will not reach the phone. Keep the three version strings in step: `versionName` in `app/build.gradle.kts`, `version` in `bridge/package.json`, `BRIDGE_VERSION` in `bridge/server.js`.
+**The bridge is packaged inside the APK.** `app/build.gradle.kts` tars `bridge/{server.js,session.js,package.json,package-lock.json,start-bridge.sh}` into `bridge.tgz` and copies `scripts/setup-termux.sh` beside it as generated assets on every build. Editing those files changes the APK; a new bridge file must be added to the `packBridge` include list or it will not reach the phone. `bridge/claude/` (skills and agents, included as `claude/**`) is copied into Termux's `~/.claude` by the setup script on every install and update. Keep the three version strings in step: `versionName` in `app/build.gradle.kts`, `version` in `bridge/package.json`, `BRIDGE_VERSION` in `bridge/server.js`.
 
 **Onboarding installs everything from the app** (`ui/onboarding/OnboardingScreen.kt`, driven by `OnboardingUi.action`, which picks the one thing the screen is waiting on):
 

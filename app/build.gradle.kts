@@ -17,7 +17,7 @@ val bridgeAssetsDir = layout.buildDirectory.dir("generated/bridgeAssets")
 
 val packBridge = tasks.register<Tar>("packBridge") {
     from(rootProject.file("bridge")) {
-        include("server.js", "session.js", "package.json", "package-lock.json", "start-bridge.sh")
+        include("server.js", "session.js", "package.json", "package-lock.json", "start-bridge.sh", "claude/**")
     }
     archiveFileName.set("bridge.tgz")
     compression = Compression.GZIP
@@ -40,8 +40,8 @@ android {
         applicationId = "dev.amang.claudetermux"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.3.0"
+        versionCode = 5
+        versionName = "0.4.0"
     }
 
     signingConfigs {
